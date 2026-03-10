@@ -355,12 +355,12 @@ class Handler(BaseHTTPRequestHandler):
 
         # Root → serve index.html
         if path in ("/", "/index.html"):
-            self._serve_file(BASE / "templates" / "index.html", "text/html")
+            self._serve_file(BASE / "public" / "index.html", "text/html")
             return
 
         # Static files
         if path.startswith("/static/"):
-            file_path = BASE / path.lstrip("/")
+            file_path = BASE / "public" / path.lstrip("/")
             if file_path.is_file():
                 content_type, _ = mimetypes.guess_type(str(file_path))
                 self._serve_file(file_path, content_type or "application/octet-stream")

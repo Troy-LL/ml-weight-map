@@ -2,12 +2,35 @@
   publish = "."
   functions = "netlify/functions"
 
-[functions]
-  # Netlify usually detects Python automatically, but we can be explicit
-  node_bundler = "esbuild"
+[[redirects]]
+  from = "/api/tokens"
+  to = "/.netlify/functions/api"
+  status = 200
+  query = {splat = "tokens"}
+  force = true
 
 [[redirects]]
-  # Redirect any /api/something request to /.netlify/functions/api
+  from = "/api/weights"
+  to = "/.netlify/functions/api"
+  status = 200
+  query = {splat = "weights"}
+  force = true
+
+[[redirects]]
+  from = "/api/intent"
+  to = "/.netlify/functions/api"
+  status = 200
+  query = {splat = "intent"}
+  force = true
+
+[[redirects]]
+  from = "/api/flowchart"
+  to = "/.netlify/functions/api"
+  status = 200
+  query = {splat = "flowchart"}
+  force = true
+
+[[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/:splat"
   status = 200
