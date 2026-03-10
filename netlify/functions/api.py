@@ -1,5 +1,6 @@
 import json
 import re
+import traceback
 from pathlib import Path
 import tiktoken
 import nltk
@@ -7,13 +8,27 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk import pos_tag
 
-# ── NLTK SETUP ─────────────────────────────────────────────────────
-# Using /tmp for NLTK data as it's writable on Netlify Functions
+# ── CONFIG ────────────────────────────────────────────────────────
 NLTK_DIR = Path("/tmp/nltk_data")
-NLTK_DIR.mkdir(parents=True, exist_ok=True)
-nltk.data.path.insert(0, str(NLTK_DIR))
+MODELS = {
+    "gpt-4o": { "label": "GPT-4o", "encoding": "o200k_base", "multiplier": 1.0, "input_cost": 2.50, "output_cost": 10.00, "context_window": 128_000 },
+    "claude-sonnet-4": { "label": "Claude Sonnet 4", "encoding": "cl100k_base", "multiplier": 1.05, "input_cost": 3.00, "output_cost": 15.00, "context_window": 200_000 },
+    "gemini-2.0-flash": { "label": "Gemini 2.0 Flash", "encoding": "cl100k_base", "multiplier": 0.95, "input_cost": 0.10, "output_cost": 0.40, "context_window": 1_000_000 },
+}
 
-def _ensure_nltk():
+# ── LAZY INIT ─────────────────────────────────────────────────────
+_INITIALIZED = False
+_ENC = {}
+_STOP = set()
+
+def _initialize():
+    global _INITIALIZED, _ENC, _STOP
+    if _INITIALIZED: return
+    
+    # NLTK Setup
+    NLTK_DIR.mkdir(parents=True, exist_ok=True)
+    nltk.data.path.insert(0, str(NLTK_DIR))
+    
     needed = {
         "tokenizers/punkt_tab": "punkt_tab",
         "corpora/stopwords": "stopwords",
@@ -24,23 +39,17 @@ def _ensure_nltk():
             nltk.data.find(resource_path)
         except LookupError:
             nltk.download(pkg_name, download_dir=str(NLTK_DIR), quiet=True)
+            
+    # Tiktoken Setup
+    for mid, cfg in MODELS.items():
+        enc_name = cfg["encoding"]
+        if enc_name not in _ENC:
+            _ENC[enc_name] = tiktoken.get_encoding(enc_name)
+            
+    _STOP = set(stopwords.words("english"))
+    _INITIALIZED = True
 
-_ensure_nltk()
-
-# ── TIKTOKEN & NLTK DATA ──────────────────────────────────────────
-ENC = {
-    "o200k_base": tiktoken.get_encoding("o200k_base"),
-    "cl100k_base": tiktoken.get_encoding("cl100k_base"),
-}
-STOP = set(stopwords.words("english"))
-
-# ── MODELS & DICTIONARIES (Copied from server.py) ──────────────────
-MODELS = {
-    "gpt-4o": { "label": "GPT-4o", "encoding": "o200k_base", "multiplier": 1.0, "input_cost": 2.50, "output_cost": 10.00, "context_window": 128_000 },
-    "claude-sonnet-4": { "label": "Claude Sonnet 4", "encoding": "cl100k_base", "multiplier": 1.05, "input_cost": 3.00, "output_cost": 15.00, "context_window": 200_000 },
-    "gemini-2.0-flash": { "label": "Gemini 2.0 Flash", "encoding": "cl100k_base", "multiplier": 0.95, "input_cost": 0.10, "output_cost": 0.40, "context_window": 1_000_000 },
-}
-
+# ── DATA ──────────────────────────────────────────────────────────
 ACTION_VERBS = {"write", "create", "make", "build", "generate", "explain", "analyze", "describe", "list", "show", "give", "find", "help", "design", "code", "implement", "train", "develop", "compare", "summarize", "detail", "produce", "optimize", "debug", "refactor", "deploy", "test", "translate", "convert", "calculate", "evaluate", "plan", "fix", "configure", "setup", "install", "migrate", "integrate", "solve"}
 TECH_TERMS = {"python", "javascript", "typescript", "react", "vue", "angular", "api", "rest", "graphql", "neural", "network", "model", "data", "algorithm", "database", "function", "class", "pytorch", "tensorflow", "sql", "nosql", "html", "css", "json", "yaml", "xml", "llm", "gpt", "bert", "transformer", "vector", "embedding", "docker", "kubernetes", "aws", "azure", "gcp", "linux", "server", "machine", "learning", "deep", "regression", "classification", "clustering", "backend", "frontend", "fullstack", "microservice", "token", "prompt", "inference", "training", "dataset", "feature", "component", "module", "package", "library", "framework"}
 QUALITY_MODIFIERS = {"step", "guide", "tutorial", "detailed", "complete", "full", "comprehensive", "advanced", "optimized", "efficient", "structured", "professional", "simple", "basic", "complex", "minimal", "robust", "scalable", "production", "enterprise", "beginner", "expert", "modern", "lightweight", "secure", "performant", "reliable"}
@@ -74,7 +83,7 @@ def handle_tokens(prompt):
     word_count, char_count = len(words), len(text)
     results = {}
     for mid, cfg in MODELS.items():
-        enc = ENC[cfg["encoding"]]
+        enc = _ENC[cfg["encoding"]]
         raw = len(enc.encode(text))
         pt = max(1, round(raw * cfg["multiplier"]))
         o_min = round(pt * 1.8); o_max = round(pt * 7.5); o_mid = (o_min + o_max) // 2
@@ -89,7 +98,7 @@ def handle_weights(prompt):
     freq = {}
     for tok in tokens:
         c = re.sub(r"[^a-z]", "", tok.lower())
-        if c and c not in STOP: freq[c] = freq.get(c, 0) + 1
+        if c and c not in _STOP: freq[c] = freq.get(c, 0) + 1
     max_freq = max(freq.values()) if freq else 1
     words = []
     for word, pos in tagged:
@@ -98,7 +107,7 @@ def handle_weights(prompt):
             words.append({"word": word, "score": 0.05})
             continue
         base = POS_WEIGHTS.get(pos, 0.15)
-        if clean in STOP: base = 0.08
+        if clean in _STOP: base = 0.08
         else:
             if clean in ACTION_VERBS: base = max(base, 0.92)
             elif clean in TECH_TERMS: base = max(base, 0.85)
@@ -127,16 +136,15 @@ def handle_flowchart(prompt):
 
 # ── LAMBDA HANDLER ───────────────────────────────────────────────
 def handler(event, context):
-    path = event.get("path", "")
-    # Netlify functions usually include the function name in the path
-    # e.g. /.netlify/functions/api/tokens
-    # We want to extract the tail: /tokens
-    sub_path = path.split("/")[-1]
-    
-    if event.get("httpMethod") != "POST":
-        return { "statusCode": 405, "body": json.dumps({"error": "Method not allowed"}) }
-
     try:
+        _initialize()
+        
+        path = event.get("path", "")
+        sub_path = path.split("/")[-1]
+        
+        if event.get("httpMethod") != "POST":
+            return { "statusCode": 405, "body": json.dumps({"error": "Method not allowed"}) }
+
         body = json.loads(event.get("body", "{}"))
         prompt = body.get("prompt", "")
         
@@ -152,4 +160,10 @@ def handler(event, context):
             "body": json.dumps(result)
         }
     except Exception as e:
-        return { "statusCode": 500, "body": json.dumps({"error": str(e)}) }
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error": str(e),
+                "trace": traceback.format_exc()
+            })
+        }
